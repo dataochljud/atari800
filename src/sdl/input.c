@@ -78,6 +78,13 @@ static int KBD_STICK_1_RIGHT = SDLK_d;
 static int KBD_STICK_1_DOWN = SDLK_s;
 static int KBD_STICK_1_UP = SDLK_w;
 
+/* Maping for the START, RESET, OPTION, SELECT and EXIT keys */
+static int KBD_RESET = SDLK_F5;
+static int KBD_OPTION = SDLK_F2;
+static int KBD_SELECT = SDLK_F3;
+static int KBD_START = SDLK_F4;
+static int KBD_EXIT = SDLK_F9;
+
 /* real joysticks */
 
 static int fd_joystick0 = -1;
@@ -88,6 +95,10 @@ static SDL_Joystick *joystick[MAX_JOYSTICKS] = { NULL, NULL, NULL, NULL };
 static int joystick_nbuttons[MAX_JOYSTICKS];
 static SDL_INPUT_RealJSConfig_t real_js_configs[MAX_JOYSTICKS];
 static int joysticks_found = 0;
+static struct js_state {
+	unsigned int port;
+	unsigned int trig;
+} sdl_js_state[MAX_JOYSTICKS];
 
 #define minjoy 10000			/* real joystick tolerancy */
 
@@ -219,6 +230,16 @@ int SDL_INPUT_ReadConfig(char *option, char *parameters)
 		return set_real_js_use_hat(2,parameters);
 	else if (strcmp(option, "SDL_JOY_3_USE_HAT") == 0)
 		return set_real_js_use_hat(3,parameters);
+	else if (strcmp(option, "SDL_RESET_KEY") == 0)
+	        return SDLKeyBind(&KBD_RESET, parameters);
+	else if (strcmp(option, "SDL_OPTION_KEY") == 0)
+	        return SDLKeyBind(&KBD_OPTION, parameters);
+	else if (strcmp(option, "SDL_SELECT_KEY") == 0)
+	        return SDLKeyBind(&KBD_SELECT, parameters);
+	else if (strcmp(option, "SDL_START_KEY") == 0)
+	        return SDLKeyBind(&KBD_START, parameters);
+	else if (strcmp(option, "SDL_EXIT_KEY") == 0)
+	        return SDLKeyBind(&KBD_EXIT, parameters);
 	else
 		return FALSE;
 }
@@ -242,6 +263,12 @@ void SDL_INPUT_WriteConfig(FILE *fp)
 	fprintf(fp, "SDL_JOY_1_DOWN=%d\n", KBD_STICK_1_DOWN);
 	fprintf(fp, "SDL_JOY_1_TRIGGER=%d\n", KBD_TRIG_1);
 
+	fprintf(fp, "SDL_RESET_KEY=%d\n", KBD_RESET);
+	fprintf(fp, "SDL_OPTION_KEY=%d\n", KBD_OPTION);
+	fprintf(fp, "SDL_SELECT_KEY=%d\n", KBD_SELECT);
+	fprintf(fp, "SDL_START_KEY=%d\n", KBD_START);
+	fprintf(fp, "SDL_EXIT_KEY=%d\n", KBD_EXIT);
+	
 	write_real_js_configs(fp);
 }
 
@@ -666,29 +693,35 @@ int PLATFORM_Keyboard(void)
 
 	/* OPTION / SELECT / START keys */
 	INPUT_key_consol = INPUT_CONSOL_NONE;
-	if (kbhits[SDLK_F2])
+	if (kbhits[KBD_OPTION])
 		INPUT_key_consol &= ~INPUT_CONSOL_OPTION;
-	if (kbhits[SDLK_F3])
+	if (kbhits[KBD_SELECT])
 		INPUT_key_consol &= ~INPUT_CONSOL_SELECT;
-	if (kbhits[SDLK_F4])
+	if (kbhits[KBD_START])
 		INPUT_key_consol &= ~INPUT_CONSOL_START;
 
 	if (key_pressed == 0)
 		return AKEY_NONE;
 
 	/* Handle movement and special keys. */
+
+	/* Since KBD_RESET & KBD_EXIT are variables, they can't be cases */
+	/* in a switch statement.  So handle them here with if-blocks */
+	if (lastkey == KBD_RESET) {
+		key_pressed = 0;
+		return INPUT_key_shift ? AKEY_COLDSTART : AKEY_WARMSTART;
+	}
+	if (lastkey == KBD_EXIT) {
+	        return AKEY_EXIT;
+	}
+
 	switch (lastkey) {
 	case SDLK_F1:
 		key_pressed = 0;
 		return AKEY_UI;
-	case SDLK_F5:
-		key_pressed = 0;
-		return INPUT_key_shift ? AKEY_COLDSTART : AKEY_WARMSTART;
 	case SDLK_F8:
 		UI_alt_function = UI_MENU_MONITOR;
 		break;
-	case SDLK_F9:
-		return AKEY_EXIT;
 	case SDLK_F10:
 		key_pressed = 0;
 		return INPUT_key_shift ? AKEY_SCREENSHOT_INTERLACE : AKEY_SCREENSHOT;
@@ -1235,6 +1268,11 @@ int SDL_INPUT_Initialise(int *argc, char *argv[])
 	int no_joystick = FALSE;
 	int help_only = FALSE;
 
+	for(i = 0; i < MAX_JOYSTICKS; i++) {
+		sdl_js_state[i].port = INPUT_STICK_CENTRE;
+		sdl_js_state[i].trig = 0;
+	}
+
 	for (i = j = 1; i < *argc; i++) {
 #ifdef LPTJOY
 		int i_a = (i + 1 < *argc);		/* is argument available? */
@@ -1274,6 +1312,18 @@ int SDL_INPUT_Initialise(int *argc, char *argv[])
 			else a_m = TRUE;
 		}
 #endif /* LPTJOY */
+		else if (strcmp(argv[i], "-kbdjoy0") == 0) {
+			PLATFORM_kbd_joy_0_enabled = TRUE;
+		}
+		else if (!strcmp(argv[i], "-kbdjoy1")) {
+			PLATFORM_kbd_joy_1_enabled = TRUE;
+		}
+		else if (strcmp(argv[i], "-no-kbdjoy0") == 0) {
+			PLATFORM_kbd_joy_0_enabled = FALSE;
+		}
+		else if (!strcmp(argv[i], "-no-kbdjoy1")) {
+			PLATFORM_kbd_joy_1_enabled = FALSE;
+		}
 		else {
 			if (strcmp(argv[i], "-help") == 0) {
 				help_only = TRUE;
@@ -1286,6 +1336,11 @@ int SDL_INPUT_Initialise(int *argc, char *argv[])
 				Log_print("\t-joy0 <pathname> Select LPTjoy0 device");
 				Log_print("\t-joy1 <pathname> Select LPTjoy1 device");
 #endif /* LPTJOY */
+				Log_print("\t-kbdjoy0         enable joystick 0 keyboard emulation");
+				Log_print("\t-kbdjoy1         enable joystick 1 keyboard emulation");
+				Log_print("\t-no-kbdjoy0      disable joystick 0 keyboard emulation");
+				Log_print("\t-no-kbdjoy1      disable joystick 1 keyboard emulation");
+
 				Log_print("\t-grabmouse       Prevent mouse pointer from leaving window");
 			}
 			argv[j++] = argv[i];
@@ -1449,12 +1504,6 @@ static int get_LPT_joystick_state(int fd)
 	return 0;
 #endif /* LPTJOY */
 }
-
-
-static struct js_state {
-	unsigned int port;
-	unsigned int trig;
-} sdl_js_state[MAX_JOYSTICKS];
 
 static void update_SDL_joysticks(void)
 {
@@ -1651,7 +1700,7 @@ static int SDL_controller_kb1(void)
 	static int repdelay_timeout = REPEAT_DELAY;
 	struct js_state *state = &sdl_js_state[0];
 
-	if (! joystick0) return(AKEY_NONE);  /* no controller present */
+	if (! joysticks_found) return(AKEY_NONE);  /* no controller present */
 
 	update_SDL_joysticks();
 
